@@ -285,9 +285,6 @@ private:
     Ref<RenderTarget> m_viewportTarget;
 };
 
-
-
-
 class TestLayer : public Layer {
 public:
     TestLayer(Ref<RenderTarget> target) : Layer("Test Layer"),  m_renderTarget(std::move(target)) {}
@@ -360,92 +357,10 @@ private:
     Ref<RenderTarget> m_renderTarget;
 };
 
-
-class TexTestLayer : public Layer {
+class FullscreenAspectLayer : public Layer {
 public:
-    TexTestLayer(Ref<RenderTarget> source) : Layer("TexTestLayer"), m_source(std::move(source)) {}
-    ~TexTestLayer() override = default;
-
-    void setup() override {
-        Renderer::setClearColor(0.1, 0.1, 0.1, 1.0);
-
-        const std::vector<float> vertices = {
-            // position            normal               texCoord
-            -0.5f, -0.5f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
-             0.5f, -0.5f, 0.0f,   0.0f, 0.0f, 1.0f,   1.0f, 0.0f,
-             0.5f,  0.5f, 0.0f,   0.0f, 0.0f, 1.0f,   1.0f, 1.0f,
-            -0.5f,  0.5f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 1.0f,
-        };
-        const std::vector<u32> indices = { 0, 1, 2,  2, 3, 0 };
-
-        const auto vb = VertexBuffer::create(vertices.data(), vertices.size() * sizeof(float));
-        vb->setLayout({
-            { ShaderDataType::Float3, "a_position" },
-            { ShaderDataType::Float3, "a_normal"   },
-            { ShaderDataType::Float2, "a_texCoord" },
-        });
-
-        const auto ib = IndexBuffer::create(indices.data(), indices.size());
-        m_geometry = Geometry::create(vb, ib);
-
-        // texture
-        m_texture = TextureLoader::load(cur_dir / "assets/textures/car_red.png");
-
-        // shader
-        const auto shader = ShaderLoader::load({
-            { ShaderStage::Vertex,   cur_dir / "assets/texture.vert" },
-            { ShaderStage::Fragment, cur_dir / "assets/texture.frag" },
-        });
-
-        // pipeline
-        PipelineSpec pipelineSpec;
-        pipelineSpec.shader       = shader;
-        pipelineSpec.blendMode = BlendMode::Alpha;
-        pipelineSpec.vertexLayout = {
-                { ShaderDataType::Float3, "a_position" },
-                { ShaderDataType::Float3, "a_normal"   },
-                { ShaderDataType::Float2, "a_texCoord" },
-            };
-        m_pipeline = RenderPipeline::create(pipelineSpec);
-
-        // material
-        const auto layout = MakeRef<MaterialLayout>(MaterialLayout{
-            { MaterialParamType::Texture2D, "u_texture" },
-        });
-        m_material = MakeRef<Material>(m_pipeline, layout);
-
-        // The texture object is stable — same ptr every frame,
-        // contents are whatever TestLayer last rendered into it
-        m_material->setTexture("u_texture", m_source->getColorAttachment(0));
-    }
-
-    void onEvent(Event& event) override {}
-
-    void update() override {
-        Renderer::submit({ m_geometry, m_material, Transform{} });
-        Renderer::execute();
-    }
-
-    void cleanup() override {
-        m_geometry.reset();
-        m_material.reset();
-        m_pipeline.reset();
-        m_texture.reset();
-    }
-
-private:
-    Ref<Geometry>       m_geometry;
-    Ref<Material>       m_material;
-    Ref<RenderPipeline> m_pipeline;
-    Ref<Texture2D>      m_texture;
-
-    Ref<RenderTarget> m_source;
-};
-
-class AspectLayer : public Layer {
-public:
-    AspectLayer(Ref<RenderTarget> source) : Layer("Aspect Layer"), m_source(std::move(source)) {}
-    ~AspectLayer() override = default;
+    FullscreenAspectLayer(Ref<RenderTarget> source) : Layer("Fullscreen Aspect Layer"), m_source(std::move(source)) {}
+    ~FullscreenAspectLayer() override = default;
 
     void onEvent(Event& event) override {
         if (event.getEventType() == EventType::WindowResize) {
@@ -466,7 +381,7 @@ public:
     }
 
     void setup() override {
-        Renderer::setClearColor(1.0, 1.0, 1.0, 1.0);
+        Renderer::setClearColor(0.0, 0.0, 0.0, 1.0);
 
         const std::vector<float> vertices = {
             // position            texCoord
@@ -525,7 +440,6 @@ private:
     Ref<RenderTarget> m_source;
 };
 
-
 class May10EngineEditor : public Application {
 public:
     May10EngineEditor(const WindowCreationProps& props = WindowCreationProps()) : Application(props) {
@@ -540,10 +454,9 @@ public:
             .filterMag = TextureSpec::Filter::Nearest,
         });
 
-        pushLayer(new TestLayer(sharedTarget));
-        //pushLayer(new TexTestLayer(sharedTarget));
-        //pushLayer(new AspectLayer(sharedTarget));
-        pushOverlay(new ImGuiEditorLayer(sharedTarget));
+        pushLayer(new TestLayer(sharedTarget));              // "the game"
+        pushLayer(new FullscreenAspectLayer(sharedTarget));  // "game view" (no editor)
+        pushOverlay(new ImGuiEditorLayer(sharedTarget));     // "the editor"
     }
 };
 
