@@ -5,6 +5,7 @@
 #ifndef SANDBOX_RENDERER_H
 #define SANDBOX_RENDERER_H
 
+#include "application.h"
 #include "coreOpenGL.h"
 
 template<typename T>
@@ -14,6 +15,43 @@ template<typename T, typename... Args>
 std::shared_ptr<T> MakeRef(Args&&... args) {
     return std::make_shared<T>(std::forward<Args>(args)...);
 }
+
+/* CLAUDE'S NOTES FOR THE FUTURE:
+beginFrame / endFrame are too thin right now. In Vulkan, beginFrame needs to acquire a swapchain image, wait on a fence,
+and begin a command buffer. In DX12, similar — wait on the previous frame's fence, reset the allocator, begin recording.
+These methods will need to carry more context (which frame index, which command buffer, etc.) that doesn't exist yet
+Not a problem to solve now, but worth knowing the interface will need to grow there.
+
+Shaders. Your OpenGLShader compiles from GLSL source at runtime. For Vulkan you'll compile GLSL/HLSL → SPIR-V
+ahead of time; for DX12 you'll use DXIL (compiled from HLSL). The ShaderBinary struct and the m_binaries map you
+already have are the right placeholder for this. The ShaderLoader will need a backend-aware path when the time comes,
+but the Shader interface itself is fine.
+
+The dynamic_cast / dynamic_pointer_cast pattern. You're doing this in several places to get from the abstract type back
+to the concrete OpenGL type (e.g. to call getID() or getVAO()). This is unavoidable with your current design, but it
+means OpenGLRendererAPI is internally coupled to all the OpenGL* concrete types. That's fine and expected — each backend
+implementation will know about its own concrete types. Just be aware this is the deliberate tradeoff of this pattern.
+
+Uniform uploads / uploadTransform. OpenGL lets you call glUniform* anytime. Vulkan and DX12 don't have this — per-draw
+data goes through push constants (Vulkan) or root constants/descriptor tables (DX12), and global/per-frame data goes
+through UBOs/CBVs bound at the start of a pass. The uploadTransform method works fine as an abstraction, but the
+implementation will be completely different underneath, and eventually you'll want a more principled per-object data
+story (a push constant block or a dynamic UBO) rather than uploading individual uniforms.
+
+MaterialLayout / uniform binding. Same issue — in Vulkan there are no string-named uniforms. Everything is set/binding
+indices in a descriptor layout. When you get there you'll likely need MaterialLayout to carry set/binding metadata
+alongside the name, or you'll do reflection off SPIR-V to generate it automatically (which your comment
+already mentions as a goal).
+
+Bottom Line
+The architecture is sound and will port well. The interface layer is doing its job.
+The main things to keep in mind as you go:
+
+beginFrame/endFrame will grow significantly for the later backends
+Shader loading will need a backend-aware strategy (SPIR-V vs DXIL)
+The uniform/material system will need a rethink for bindless/descriptor-set based backends — but that's a
+    natural forcing function to build the shader reflection you already have notes about
+*/
 
 
 /*
@@ -283,9 +321,16 @@ private:
 
 /* GENERIC */
 enum class TextureFormat {
-    RGBA8,   // unsigned char, standard images
-    RGBA16F, // float, HDR
+    RGBA8,           // unsigned char, standard images
+    RGBA16F,         // float, HDR
+    Depth24Stencil8, // typical depth+stencil
+    Depth32F,        // float-only depth, useful for shadow maps
+    None,            // for render targets with no depth attachment
 };
+
+static bool isDepthFormat(const TextureFormat& fmt) {
+    return fmt == TextureFormat::Depth24Stencil8 || fmt == TextureFormat::Depth32F;
+}
 
 /* GENERIC */
 struct TextureSpec {
@@ -460,6 +505,53 @@ public:
 };
 
 /* ================================================================================================================ */
+/* RENDER TARGETS ================================================================================================= */
+/* ================================================================================================================ */
+
+/* GENERIC */
+
+struct RenderTargetSpec {
+    u32 width = 1280;
+    u32 height = 720;
+
+    // ordered list of color attachments
+    // each entry is a TextureFormat
+    std::vector<TextureFormat> colorAttachments;
+
+    // optional depth attachment. Leave as None if depth is not needed
+    TextureFormat depthAttachment = TextureFormat::None;
+
+    bool clearColor = true;
+    bool clearDepth = true;
+    glm::vec4 clearColorValue = glm::vec4{0.0f, 0.0f, 0.0f, 1.0f};
+
+    TextureSpec::Filter filterMin = TextureSpec::Filter::Linear;
+    TextureSpec::Filter filterMag = TextureSpec::Filter::Linear;
+    TextureSpec::Wrap wrapS       = TextureSpec::Wrap::ClampToEdge;
+    TextureSpec::Wrap wrapT       = TextureSpec::Wrap::ClampToEdge;
+};
+
+/* INTERFACE */
+class RenderTarget {
+public:
+    virtual ~RenderTarget() = default;
+
+    virtual void bind()   = 0;
+    virtual void unbind() = 0; // rebind default framebuffer
+
+    virtual void resize(u32 width, u32 height) = 0;
+
+    // get color attachment as a texture you can pass to a material
+    [[nodiscard]] virtual Ref<Texture2D> getColorAttachment(u32 index = 0) const = 0;
+    [[nodiscard]] virtual Ref<Texture2D> getDepthAttachment() const = 0;
+
+    [[nodiscard]] virtual u32 getWidth() const = 0;
+    [[nodiscard]] virtual u32 getHeight() const = 0;
+
+    static Ref<RenderTarget> create(const RenderTargetSpec& spec);
+};
+
+/* ================================================================================================================ */
 /* PIPELINE ======================================================================================================= */
 /* ================================================================================================================ */
 
@@ -541,7 +633,7 @@ public:
     }
 
     [[nodiscard]] const MaterialParameter* find (const std::string& name) const {
-        auto it = m_lookup.find(name);
+        const auto it = m_lookup.find(name);
 
         if (it == m_lookup.end())
             return nullptr;
@@ -698,6 +790,9 @@ public:
     virtual void setClearColor(float r, float g, float b, float a) = 0;
     virtual void clear() = 0;
 
+    virtual void bindRenderTarget(const Ref<RenderTarget>& target) = 0;
+    virtual void unbindRenderTarget() = 0;
+
     virtual void bindPipeline(const Ref<RenderPipeline>& pipeline) = 0;
 
     virtual void bindGeometry(const Ref<Geometry>& geometry) = 0;
@@ -712,11 +807,18 @@ public:
 /* GENERIC */
 class Renderer {
 public:
-    static void init() { s_instance->init(); }
+    static void init(int w, int h) { s_instance->init(); setViewport(0, 0, w, h); }
     static void shutdown() { s_instance->shutdown(); }
 
     static void beginFrame() { s_instance->beginFrame(); }
     static void endFrame() { s_instance->endFrame(); }
+
+    static void bindRenderTarget(const Ref<RenderTarget>& target) { s_instance->bindRenderTarget(target); }
+    static void unbindRenderTarget() {
+        s_instance->unbindRenderTarget();
+        // restore the last known window viewport
+        s_instance->setViewport(s_viewportX, s_viewportY, s_viewportWidth, s_viewportHeight);
+    }
 
     static void execute() {
         // sort by shader to minimize state switches eventually
@@ -758,11 +860,19 @@ public:
 
     static void submit(const RenderCommand& cmd) { s_queue.push_back(cmd); }
 
-    static void setViewport(u32 x, u32 y, u32 width, u32 height) { s_instance->setViewport(x, y, width, height); }
-    static void setClearColor(float r, float g, float b, float a = 1.0f) {  s_instance->setClearColor(r, g, b, a); }
-    static void clear() { s_instance->clear(); }
+    static void setViewport(u32 x, u32 y, u32 width, u32 height) {
+        s_viewportX = x;
+        s_viewportY = y;
+        s_viewportWidth  = width;
+        s_viewportHeight = height;
+        s_instance->setViewport(x, y, width, height);
+    }
+    static void setClearColor(float r, float g, float b, float a = 1.0f) {  m_clearColor = glm::vec4(r, g, b, a); }
+    static void clear() { s_instance->setClearColor(m_clearColor.r, m_clearColor.g, m_clearColor.b, m_clearColor.a); s_instance->clear(); }
 private:
     static std::vector<RenderCommand> s_queue;
+    static glm::vec4 m_clearColor;
+    static u32 s_viewportX, s_viewportY, s_viewportWidth, s_viewportHeight;
 private:
     static RendererAPI* s_instance;
 };

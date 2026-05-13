@@ -4,15 +4,13 @@
 #include "glfw_opengl.h"
 #include "opengl_renderer.h"
 
+Ref<RenderTarget> RenderTarget::create(const RenderTargetSpec& spec) {
+    return MakeRef<OpenGLRenderTarget>(spec);
+}
+
 Ref<RenderPipeline> RenderPipeline::create(const PipelineSpec& pipeline) {
     return MakeRef<OpenGLRenderPipeline>(pipeline);
 }
-
-/*
-Ref<Material> Material::create(const Ref<Shader>& shader) {
-    return MakeRef<Material>(shader);
-}
-*/
 
 Ref<Shader> Shader::create(const std::unordered_map<ShaderStage, std::string>& sources) {
     return MakeRef<OpenGLShader>(sources);
@@ -45,12 +43,6 @@ Ref<TextureCube> TextureCube::createFromCross(const CubeTextureSpec& spec,
                                                const float* data) {
     return MakeRef<OpenGLTextureCube>(spec, data);
 }
-
-/*
-Ref<Shader> Shader::create(const std::string& vertexSrc, const std::string& fragmentSrc) {
-    return MakeRef<OpenGLShader>(vertexSrc, fragmentSrc);
-}
-*/
 
 Ref<Geometry> Geometry::create(const Ref<VertexBuffer>& vb, const Ref<IndexBuffer>& ib) {
     return MakeRef<OpenGLGeometry>(vb, ib);

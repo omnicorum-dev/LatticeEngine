@@ -304,10 +304,12 @@ private:
 /* TEXTURES ======================================================================================================= */
 /* ================================================================================================================ */
 
-static GLenum toGLFormat(const TextureFormat format) {
+static GLint toGLFormat(const TextureFormat format) {
     switch (format) {
         case TextureFormat::RGBA8:   return GL_RGBA8;
         case TextureFormat::RGBA16F: return GL_RGBA16F;
+        case TextureFormat::Depth24Stencil8: return GL_DEPTH24_STENCIL8;
+        case TextureFormat::Depth32F: return GL_DEPTH_COMPONENT32F;
         default:
             LOG_ERROR("Unknown texture format. defaulting to RGBA8");
             return GL_RGBA8;
@@ -370,9 +372,12 @@ private:
         glGenTextures(1, &m_id);
         glBindTexture(GL_TEXTURE_2D, m_id);
 
-        glTexImage2D(GL_TEXTURE_2D, 0, toGLFormat(spec.format),
+        const GLenum baseFormat = isDepthFormat(spec.format) ? GL_DEPTH_COMPONENT : GL_RGBA;
+        const GLint internalFormat = toGLFormat(spec.format);
+
+        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat,
                      spec.width, spec.height, 0,
-                     GL_RGBA, dataType, data);
+                     baseFormat, dataType, data);
 
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, toGLFilter(spec.filterMin));
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, toGLFilter(spec.filterMag));
@@ -509,6 +514,133 @@ private:
 };
 
 /* ================================================================================================================ */
+/* RENDER TARGETS ================================================================================================= */
+/* ================================================================================================================ */
+
+class OpenGLRenderTarget : public RenderTarget {
+public:
+    explicit OpenGLRenderTarget(const RenderTargetSpec& spec)
+        : m_spec(spec) {
+        create();
+    }
+
+    ~OpenGLRenderTarget() override {
+        destroy();
+    }
+
+    void bind() override {
+        glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
+        glViewport(0, 0, m_spec.width, m_spec.height);
+
+        GLbitfield mask = 0;
+        if (m_spec.clearColor) {
+            mask |= GL_COLOR_BUFFER_BIT;
+            glClearColor(m_spec.clearColorValue.r, m_spec.clearColorValue.g,
+                         m_spec.clearColorValue.b, m_spec.clearColorValue.a);
+        }
+        if (m_spec.clearDepth && m_spec.depthAttachment != TextureFormat::None)
+            mask |= GL_DEPTH_BUFFER_BIT;
+
+        if (mask) glClear(mask);
+    }
+
+    void unbind() override {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    void resize(u32 width, u32 height) override {
+        m_spec.width  = width;
+        m_spec.height = height;
+        destroy();
+        create();
+    }
+
+    [[nodiscard]] Ref<Texture2D> getColorAttachment(const u32 index = 0) const override {
+        return m_colorAttachments.at(index);
+    }
+
+    [[nodiscard]] Ref<Texture2D> getDepthAttachment() const override {
+        return m_depthAttachment;
+    }
+
+    [[nodiscard]] u32 getWidth()  const override { return m_spec.width;  }
+    [[nodiscard]] u32 getHeight() const override { return m_spec.height; }
+
+private:
+    void create() {
+        glGenFramebuffers(1, &m_fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
+
+        // Color attachments
+        std::vector<GLenum> drawBuffers;
+        for (u32 i = 0; i < m_spec.colorAttachments.size(); ++i) {
+            TextureSpec texSpec;
+            texSpec.width     = m_spec.width;
+            texSpec.height    = m_spec.height;
+            texSpec.format    = m_spec.colorAttachments[i];
+            texSpec.filterMin = m_spec.filterMin;
+            texSpec.filterMag = m_spec.filterMag;
+            texSpec.wrapS     = m_spec.wrapS;
+            texSpec.wrapT     = m_spec.wrapT;
+
+            // Create a blank texture for this attachment
+            auto tex = Texture2D::create(texSpec, static_cast<unsigned char *>(nullptr));
+            m_colorAttachments.push_back(tex);
+
+            const u32 glID = std::dynamic_pointer_cast<OpenGLTexture2D>(tex)->getID();
+            glFramebufferTexture2D(GL_FRAMEBUFFER,
+                                   GL_COLOR_ATTACHMENT0 + i,
+                                   GL_TEXTURE_2D, glID, 0);
+            drawBuffers.push_back(GL_COLOR_ATTACHMENT0 + i);
+        }
+
+        if (!drawBuffers.empty())
+            glDrawBuffers(static_cast<GLsizei>(drawBuffers.size()), drawBuffers.data());
+
+        // Depth attachment
+        if (m_spec.depthAttachment != TextureFormat::None) {
+            TextureSpec depthSpec;
+            depthSpec.width  = m_spec.width;
+            depthSpec.height = m_spec.height;
+            depthSpec.format = m_spec.depthAttachment;
+
+            const auto tex = Texture2D::create(depthSpec, static_cast<unsigned char *>(nullptr));
+            m_depthAttachment = tex;
+
+            const u32 glID = std::dynamic_pointer_cast<OpenGLTexture2D>(tex)->getID();
+
+            const GLenum attachment = (m_spec.depthAttachment == TextureFormat::Depth24Stencil8)
+                ? GL_DEPTH_STENCIL_ATTACHMENT
+                : GL_DEPTH_ATTACHMENT;
+
+            glFramebufferTexture2D(GL_FRAMEBUFFER, attachment,
+                                   GL_TEXTURE_2D, glID, 0);
+        }
+
+        LOG_ASSERT(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE
+                   && "Framebuffer incomplete");
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    void destroy() {
+        if (m_fbo) {
+            glDeleteFramebuffers(1, &m_fbo);
+            m_fbo = 0;
+        }
+        m_colorAttachments.clear();
+        m_depthAttachment = nullptr;
+    }
+
+private:
+    RenderTargetSpec m_spec;
+    u32 m_fbo = 0;
+
+    std::vector<Ref<Texture2D>> m_colorAttachments;
+    Ref<Texture2D>              m_depthAttachment;
+};
+
+/* ================================================================================================================ */
 /* PIPELINE ======================================================================================================= */
 /* ================================================================================================================ */
 
@@ -542,11 +674,18 @@ public:
     void shutdown() override {}
 
     void beginFrame() override {
-        Renderer::setClearColor(0.8f, 0.1f, 0.8f, 1.f);
         Renderer::clear();
     }
 
     void endFrame() override {}
+
+    void bindRenderTarget(const Ref<RenderTarget> &target) override {
+        target->bind();
+    }
+
+    void unbindRenderTarget() override {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
 
     void bindPipeline(const Ref<RenderPipeline> &pipeline) override {
         const auto& spec = pipeline->getSpec();

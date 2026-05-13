@@ -333,7 +333,7 @@ private:
 
 class LayerStack {
 public:
-    LayerStack() { m_layerInsertLocation = m_layers.begin(); }
+    LayerStack() : m_layerInsertIndex(0) {}
     ~LayerStack() {
         for (const Layer* layer : m_layers) {
             delete layer;
@@ -341,23 +341,26 @@ public:
     }
 
     void pushLayer(Layer* layer) {
-        m_layerInsertLocation = m_layers.emplace(m_layerInsertLocation, layer);
+        m_layers.emplace(m_layers.begin() + m_layerInsertIndex, layer);
+        ++m_layerInsertIndex;
     }
+
     void pushOverlay(Layer* overlay) {
         m_layers.emplace_back(overlay);
     }
+
     void popLayer(Layer* layer) {
         auto it = std::ranges::find(m_layers, layer);
         if (it != m_layers.end()) {
             m_layers.erase(it);
-            --m_layerInsertLocation;
+            --m_layerInsertIndex;
         }
     }
+
     void popOverlay(Layer* overlay) {
         auto it = std::ranges::find(m_layers, overlay);
-        if (it != m_layers.end()) {
+        if (it != m_layers.end())
             m_layers.erase(it);
-        }
     }
 
     std::vector<Layer*>::iterator begin() { return m_layers.begin(); }
@@ -366,7 +369,7 @@ public:
     std::vector<Layer*>::const_iterator end() const { return m_layers.end(); }
 private:
     std::vector<Layer*> m_layers;
-    std::vector<Layer*>::iterator m_layerInsertLocation;
+    u32 m_layerInsertIndex;
 };
 
 /* ================================================================================================================ */
@@ -417,7 +420,7 @@ public:
     virtual ~Application() = default;
 
     void run() {
-        Renderer::init();
+        Renderer::init(Application::getWindow().framebufferWidth(), Application::getWindow().framebufferHeight());
         setup(); // layers get pushed here
 
         while (m_running) {
@@ -468,7 +471,7 @@ public:
         overlay->cleanup();
     }
 
-    static Application& get() { return *s_instance;}
+    static Application& get() { return *s_instance; }
     [[nodiscard]] Window& getWindow() const { return *m_window; }
 private:
     virtual void setup() {};

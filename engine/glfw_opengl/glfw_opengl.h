@@ -131,6 +131,9 @@ private:
 
         glfwSetFramebufferSizeCallback(m_window, [](GLFWwindow* window, const int w, const int h) {
             WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
+
+            Renderer::setViewport(0, 0, w, h);
+
             data.framebufferWidth = w;
             data.framebufferHeight = h;
         });
