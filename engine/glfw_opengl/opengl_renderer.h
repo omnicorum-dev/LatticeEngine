@@ -553,6 +553,7 @@ public:
 
         const auto shader = std::dynamic_pointer_cast<OpenGLShader>(spec.shader);
         m_currentShader = shader;
+        m_currentPipeline = pipeline;
 
         shader->bind();
 
@@ -702,7 +703,16 @@ public:
     void drawIndexed(const Ref<Geometry> &geometry) override {
         const auto glGeometry = std::dynamic_pointer_cast<OpenGLGeometry>(geometry);
 
-        glDrawElements(GL_TRIANGLES, geometry->getIndexBuffer()->getCount(), GL_UNSIGNED_INT, nullptr);
+        GLenum topology = 0;
+        switch (m_currentPipeline->getSpec().topology) {
+            case PrimitiveTopology::Triangles:
+                topology = GL_TRIANGLES; break;
+            case PrimitiveTopology::Lines:
+                topology = GL_LINES; break;
+            case PrimitiveTopology::Points:
+                topology = GL_POINTS; break;
+        }
+        glDrawElements(topology, geometry->getIndexBuffer()->getCount(), GL_UNSIGNED_INT, nullptr);
     }
 
     void setViewport(const u32 x, const u32 y, const u32 width, const u32 height) override {
@@ -720,6 +730,7 @@ public:
 private:
 
     Ref<OpenGLShader> m_currentShader;
+    Ref<RenderPipeline> m_currentPipeline;
 
 };
 
